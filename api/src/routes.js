@@ -16,6 +16,8 @@
    GET /api/health         Hangi veri kaynağının kullanıldığı
 
    Ücretli ya da kotalı servislere giden uçlar guard.js ile korunur.
+   Tarihi geçen turlar listelerde ended: true ile görünür; tek tur, uçuş
+   takibi ve rota uçları bu turlar için 410 döner (bkz. tour-status.js).
    ========================================================= */
 
 const { getStore } = require("./store");
@@ -23,6 +25,7 @@ const { liveFlightsTo, hasCredentials, OpenSkyError } = require("./opensky");
 const hotels = require("./liteapi");
 const location = require("./location");
 const { protect } = require("./guard");
+const { isEnded, withStatus, todayIso, ENDED_RESPONSE } = require("./tour-status");
 
 const ok = (body) => ({ status: 200, body });
 const notFound = (message) => ({ status: 404, body: { error: message } });
@@ -32,11 +35,13 @@ const TOUR_FILTERS = ["scope", "continent", "transport"];
 async function catalog() {
   const store = getStore();
   const [tours, meta] = await Promise.all([store.listTours(), store.getMeta()]);
-  return ok({ source: store.source, tours, ...meta });
+  const today = todayIso();
+  return ok({ source: store.source, today, tours: tours.map((tour) => withStatus(tour, today)), ...meta });
 }
 
 async function listTours(query) {
-  const tours = await getStore().listTours();
+  const today = todayIso();
+  const tours = (await getStore().listTours()).map((tour) => withStatus(tour, today));
   const filtered = tours.filter((tour) =>
     TOUR_FILTERS.every((key) => !query[key] || tour[key] === query[key])
   );
@@ -45,7 +50,8 @@ async function listTours(query) {
 
 async function getTour(_query, { id }) {
   const tour = await getStore().getTour(id);
-  return tour ? ok(tour) : notFound(`"${id}" kodlu tur bulunamadı`);
+  if (!tour) return notFound(`"${id}" kodlu tur bulunamadı`);
+  return isEnded(tour) ? ENDED_RESPONSE : ok(withStatus(tour));
 }
 
 async function visa() {
@@ -56,6 +62,7 @@ async function visa() {
 async function liveFlights(_query, { id }) {
   const tour = await getStore().getTour(id);
   if (!tour) return notFound(`"${id}" kodlu tur bulunamadı`);
+  if (isEnded(tour)) return ENDED_RESPONSE;
   const code = tour.flight?.outbound?.to;
   if (!code) return { status: 400, body: { error: "Bu tur uçaklı değil" } };
 
@@ -75,6 +82,12 @@ const hotelRoute = (run) => async (query, params, body) => {
     if (!(error instanceof hotels.LiteApiError)) throw error;
     return { status: error.status, body: { error: error.message } };
   }
+};
+
+/** Sona eren turun rotası istenmez; bilinmeyen id'yi işleyici kendisi 404 ile karşılar. */
+const activeTourOnly = (handler) => async (query, params, body, context) => {
+  const tour = await getStore().getTour(params.id);
+  return tour && isEnded(tour) ? ENDED_RESPONSE : handler(query, params, body, context);
 };
 
 async function health() {
@@ -104,7 +117,7 @@ const ROUTES = [
   { name: "hotelPrebook", route: "hotels/prebook", method: "POST", handler: protect("hotelPrebook", 10, hotelRoute((_q, _p, body) => hotels.prebook(body))) },
   { name: "hotelBook", route: "hotels/book", method: "POST", handler: protect("hotelBook", 5, hotelRoute((_q, _p, body) => hotels.book(body))) },
   { name: "hotel", route: "hotels/{id}", handler: protect("hotels", 30, hotelRoute(hotels.getHotel)), maxAge: 120 },
-  { name: "tourRoute", route: "routes/{id}", handler: protect("routes", 30, location.tourRoute) },
+  { name: "tourRoute", route: "routes/{id}", handler: protect("routes", 30, activeTourOnly(location.tourRoute)) },
   { name: "mapAsset", route: "map/{*path}", handler: protect("map", 900, location.mapAsset) },
   { name: "health", route: "health", handler: health }
 ];

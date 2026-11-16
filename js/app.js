@@ -60,7 +60,8 @@ const CHILD_DISCOUNT = 0.5;       // 2–11 yaş çocuk indirimi
 const SINGLE_ROOM_FACTOR = 1.4;   // tek kişilik oda farkı
 const DEPOSIT_RATE = 0.3;         // peşinat oranı
 
-const TODAY = new Date().toISOString().slice(0, 10);
+// Tarihler sunucudaki gibi İstanbul saatine göre karşılaştırılır (YYYY-MM-DD).
+const TODAY = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Istanbul" });
 
 function formatMoney(amount, currency) {
   return new Intl.NumberFormat("tr-TR", {
@@ -107,6 +108,13 @@ let booking = null;
 /* ---------- 3. Tur hesapları ---------- */
 
 const isFull = (tour, date) => tour.full.includes(date) || date < TODAY;
+
+/**
+ * Son kalkış tarihi geçmiş tur sona ermiştir: listede görünür ama açılamaz.
+ * API ended alanını gönderir; gömülü veriyle çalışırken aynı hesap burada yapılır.
+ */
+const isEnded = (tour) => tour.ended === true || (tour.dates.length > 0 && tour.dates.every((date) => date < TODAY));
+const ENDED_MESSAGE = "Bu tur sona erdi, rezervasyon alınmıyor.";
 
 /** Dolu olmayan en yakın kalkış tarihi; yoksa son tarih. */
 function nextDeparture(tour) {
@@ -208,10 +216,12 @@ const SORTERS = {
 };
 
 function getVisibleTours() {
-  return TOURS.filter(matchesFilters).sort(SORTERS[state.sort]);
+  // Sona eren turlar seçili sıralamadan bağımsız olarak listenin sonunda durur.
+  return TOURS.filter(matchesFilters).sort((a, b) => isEnded(a) - isEnded(b) || SORTERS[state.sort](a, b));
 }
 
 function posterHTML(tour, { withFavorite = false, arrivalLabel = "VARIŞ" } = {}) {
+  const endedTag = isEnded(tour) ? `<span class="tag tag--ended">Sona erdi</span>` : "";
   const isFavorite = state.favorites.includes(tour.id);
   const favoriteButton = withFavorite
     ? `<button class="fav-button" type="button" data-fav="${tour.id}" aria-pressed="${isFavorite}" aria-label="Favorilere ekle">${isFavorite ? "♥" : "♡"}</button>`
@@ -223,6 +233,7 @@ function posterHTML(tour, { withFavorite = false, arrivalLabel = "VARIŞ" } = {}
       <div class="tags">
         <span class="tag">${scopeName(tour)}</span>
         <span class="tag">${TRANSPORT_ICONS[tour.transport]} ${tour.transport}</span>
+        ${endedTag}
       </div>
       <div class="route">
         <div>${tour.from}<small>KALKIŞ</small></div>
@@ -255,8 +266,10 @@ function departureChipHTML(tour) {
 }
 
 function tourCardHTML(tour) {
+  const ended = isEnded(tour);
   return `
-    <article class="ticket" tabindex="0" data-id="${tour.id}" aria-label="${tour.title}">
+    <article class="ticket${ended ? " ticket--ended" : ""}" tabindex="0" data-id="${tour.id}"
+             aria-label="${tour.title}${ended ? ", sona erdi" : ""}"${ended ? ` aria-disabled="true"` : ""}>
       ${posterHTML(tour, { withFavorite: true })}
       <div class="perforation"></div>
       <div class="ticket__body">
@@ -265,7 +278,7 @@ function tourCardHTML(tour) {
         <div class="meta">
           <span>◷ ${tour.nights} gece ${tour.nights + 1} gün</span>
           <span>⌖ ${tour.region}</span>
-          <span>▸ ${shortDate(nextDeparture(tour))}</span>
+          <span>▸ ${ended ? `Sona erdi · son kalkış ${shortDate(nextDeparture(tour))}` : shortDate(nextDeparture(tour))}</span>
         </div>
         <div class="price-row">
           <div class="price">${formatMoney(tour.price, tour.cur)}<small>kişi başı, çift kişilik oda</small></div>
@@ -338,10 +351,11 @@ const NAV_MENUS = {
 };
 
 function navTourHTML(tour) {
+  const ended = isEnded(tour);
   return `
-    <button type="button" class="nav-menu__item" data-tour-id="${tour.id}" role="menuitem">
+    <button type="button" class="nav-menu__item${ended ? " nav-menu__item--ended" : ""}" data-tour-id="${tour.id}" role="menuitem"${ended ? ` aria-disabled="true"` : ""}>
       <span class="nav-menu__title">${tour.title}</span>
-      <span class="nav-menu__meta">${TRANSPORT_ICONS[tour.transport]} ${tour.nights} gece · ${formatMoney(tour.price, tour.cur)}</span>
+      <span class="nav-menu__meta">${ended ? "Sona erdi" : `${TRANSPORT_ICONS[tour.transport]} ${tour.nights} gece · ${formatMoney(tour.price, tour.cur)}`}</span>
     </button>`;
 }
 
@@ -592,7 +606,7 @@ function showMapTooltip(marker) {
   tooltip.innerHTML = `
     <b>${tour.title}</b>
     <span>${tour.nights} gece · ${formatMoney(tour.price, tour.cur)}'den</span>
-    <small>Detay için tıklayın</small>`;
+    <small>${isEnded(tour) ? "Sona erdi" : "Detay için tıklayın"}</small>`;
   tooltip.style.left = `${pin.left + pin.width / 2 - box.left}px`;
   tooltip.style.top = `${pin.top - box.top}px`;
   tooltip.hidden = false;
@@ -674,7 +688,7 @@ function slideHTML(tour, index) {
 }
 
 function renderCarousel() {
-  carousel.tours = TOURS.filter((tour) => tour.featured);
+  carousel.tours = TOURS.filter((tour) => tour.featured && !isEnded(tour));
   if (!carousel.tours.length) {
     $("#promo").hidden = true;
     return;
@@ -800,8 +814,13 @@ const DRAWER_TABS = [
 ];
 
 function openTour(id) {
-  activeTour = TOURS.find((tour) => tour.id === id);
-  if (!activeTour) return;
+  const tour = TOURS.find((item) => item.id === id);
+  if (!tour) return;
+  if (isEnded(tour)) {
+    showToast(ENDED_MESSAGE);
+    return;
+  }
+  activeTour = tour;
 
   booking = {
     date: nextDeparture(activeTour),
@@ -943,9 +962,10 @@ const TAB_RENDERERS = {
 function dateChipsHTML(tour) {
   return tour.dates.map((date) => {
     const full = isFull(tour, date);
+    const label = date < TODAY ? "Geçti" : full ? "Dolu" : "Müsait";
     return `
       <button type="button" class="chip" data-date="${date}" aria-pressed="${date === booking.date}" ${full ? "disabled" : ""}>
-        <b>${shortDate(date)}</b><small>${full ? "Dolu" : "Müsait"}</small>
+        <b>${shortDate(date)}</b><small>${label}</small>
       </button>`;
   }).join("");
 }

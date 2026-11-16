@@ -60,6 +60,8 @@ Abonelik başına yalnızca **bir** Cosmos DB hesabı ücretsiz katmanda olabili
 
 Otel, harita, rota ve uçuş uçları yalnızca sitenin kendi sayfalarından kabul edilir ve IP başına istek sınırı uygular (`api/src/guard.js`).
 
+Son kalkış tarihi geçmiş turlar (İstanbul saatiyle) sona ermiş sayılır: `catalog` ve `tours` yanıtlarında `ended: true` ile listelenmeye devam eder, arayüzde "Sona erdi" olarak görünür ve açılamaz. `tours/{id}`, `live/{id}` ve `routes/{id}` bu turlar için `410` döner (`api/src/tour-status.js`).
+
 ## Kendi anahtarlarınızla çalıştırma
 
 Bu depoda API anahtarı yoktur. Depoyu fork edenler kendi hesaplarını açıp kendi anahtarlarını kullanır; anahtar olmayan özellik kapalı kalır, sitenin geri kalanı çalışır.
